@@ -1,6 +1,7 @@
 // Hall Defenders v2 — kingdom co-op.
 // P1 Builder: arrows (+shift = fast) move cursor, 1-4 tools, Enter build, Del sell, 5 hire miner.
-// P2 Hero: WASD move, mouse aim, click shoot, Space melee. Explores the world on the right screen.
+// P2 Hero: WASD move, Shift dash (stamina), mouse aim, Space punch, E buy pistol at hall.
+// Starts bare-handed and slower than wolves — dash to survive. Gold comes from the mines.
 (() => {
 'use strict';
 
@@ -30,10 +31,16 @@ const MINER_CARRY = 25;
 const MINER_GATHER = 4;                    // gold per second while mining
 const HALL_MAX_HP = 500;
 const HERO_MAX_HP = 60;
-const HERO_SPEED = 150;
+const HERO_SPEED = 80;                     // slower than a chasing wolf (95)
+const HERO_STAM_MAX = 100;
+const HERO_DASH_COST = 30;
+const HERO_DASH_SPEED = 460;
+const HERO_DASH_TIME = 0.16;
+const HERO_STAM_REGEN = 22;
+const PISTOL_COST = 150;
 const HERO_FIRE_CD = 0.18;
 const HERO_BULLET_DMG = 7;
-const MELEE_DMG = 22;
+const MELEE_DMG = 12;
 const MELEE_CD = 0.45;
 const MELEE_RANGE = 46;
 const RESPAWN_TIME = 5;
@@ -114,7 +121,7 @@ function newGame() {
     if (terrain[idx(tx, ty)] !== T_GRASS || bgrid[idx(tx, ty)]) continue;
     if (deposits.some((dp) => Math.hypot(dp.tx - tx, dp.ty - ty) < 8)) continue;
     terrain[idx(tx, ty)] = T_DEPOSIT;
-    deposits.push({ tx, ty, amount: Math.round(120 + dist * 3), discovered: false });
+    deposits.push({ tx, ty, amount: Math.round(160 + dist * 4), discovered: false });
     // den nearby
     for (let dt = 0; dt < 20; dt++) {
       const dx2 = tx + Math.round((Math.random() - 0.5) * 6);
@@ -133,6 +140,7 @@ function newGame() {
   hero = {
     x: hcx, y: hcy + 2.2 * TILE, hp: HERO_MAX_HP, r: 10, aim: 0,
     fireCd: 0, meleeCd: 0, dead: false, respawn: 0,
+    stam: HERO_STAM_MAX, dashT: 0, dashX: 0, dashY: 0, hasGun: false,
   };
   cursor = { tx: hall.tx - 3, ty: hall.ty, tool: 'wall' };
   builderCam = { x: hcx - LEFT_VW / 2, y: hcy - VIEW_H / 2 };
@@ -150,7 +158,7 @@ function spawnWolf(den) {
     ai: 'wolf', spr: 'wolf', den,
     x: den.x + (Math.random() - 0.5) * 80, y: den.y + (Math.random() - 0.5) * 80,
     home: { x: den.x, y: den.y },
-    r: 9, hp: 24, maxHp: 24, dmg: 8, gold: 8, atkCd: 0,
+    r: 9, hp: 24, maxHp: 24, dmg: 8, atkCd: 0,
     wt: 0, wx: den.x, wy: den.y,
   });
 }
@@ -292,6 +300,7 @@ function setPathTo(a, tx, ty, ignoreBuildings) {
 
 // ---------------------------------------------------------------- input
 const keys = {};
+let dashRequest = false;
 const mouse = { x: W / 2, y: H / 2, down: false };
 const TOOL_KEYS = { KeyY: 'wall', KeyU: 'turret', KeyI: 'house', KeyO: 'repair' };
 
@@ -312,6 +321,8 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Enter') builderAction();
   if (e.code === 'Delete' || e.code === 'Backspace') sellAt(cursor.tx, cursor.ty);
   if (e.code === 'KeyP') hireMiner();
+  if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat) dashRequest = true;
+  if (e.code === 'KeyE') buyPistol();
 });
 window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
@@ -400,6 +411,22 @@ function hireMiner() {
   announce('miner hired — the hero can escort them (they follow him)', '#80d0ff');
 }
 
+function buyPistol() {
+  if (state !== 'play' || hero.dead || hero.hasGun) return;
+  if (Math.hypot(hero.x - hallCX(), hero.y - hallCY()) > 100) {
+    announce('the pistol is sold at the hall — get closer', '#e05050');
+    return;
+  }
+  if (gold < PISTOL_COST) {
+    announce(`the pistol costs ${PISTOL_COST}g — mine more gold`, '#e05050');
+    return;
+  }
+  gold -= PISTOL_COST;
+  hero.hasGun = true;
+  addFloater(hero.x, hero.y - 16, 'pistol!', '#ffe080');
+  announce('pistol purchased! click to shoot', '#80d0ff');
+}
+
 // ---------------------------------------------------------------- raids
 function startRaid() {
   raid++;
@@ -421,8 +448,8 @@ function startRaid() {
 
   const spawn = (type) => {
     const base = type === 'brute'
-      ? { spr: 'brute', r: 13, hp: 100 + raid * 15, dmg: 20, speed: 30, gold: 25 }
-      : { spr: 'grunt', r: 9, hp: 18 + raid * 5, dmg: 6, speed: 55, gold: 6 };
+      ? { spr: 'brute', r: 13, hp: 100 + raid * 15, dmg: 20, speed: 30 }
+      : { spr: 'grunt', r: 9, hp: 18 + raid * 5, dmg: 6, speed: 55 };
     enemies.push({
       ai: 'raider', ...base, maxHp: base.hp,
       x: sx + (Math.random() - 0.5) * 100, y: sy + (Math.random() - 0.5) * 100,
@@ -486,17 +513,35 @@ function nearestDanger(x, y, radius) {
 
 function updateHero(dt) {
   if (hero.dead) {
+    dashRequest = false;
     hero.respawn -= dt;
     if (hero.respawn <= 0) {
       hero.dead = false;
       hero.hp = HERO_MAX_HP;
+      hero.stam = HERO_STAM_MAX;
+      hero.dashT = 0;
       hero.x = hallCX(); hero.y = hallCY() + 2.2 * TILE;
     }
     return;
   }
+  hero.stam = Math.min(HERO_STAM_MAX, hero.stam + HERO_STAM_REGEN * dt);
+
   let mx = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
   let my = (keys.KeyS ? 1 : 0) - (keys.KeyW ? 1 : 0);
-  if (mx || my) {
+  if (dashRequest) {
+    dashRequest = false;
+    if (hero.dashT <= 0 && hero.stam >= HERO_DASH_COST && (mx || my)) {
+      hero.stam -= HERO_DASH_COST;
+      hero.dashT = HERO_DASH_TIME;
+      const len = Math.hypot(mx, my);
+      hero.dashX = mx / len; hero.dashY = my / len;
+      addEffect(hero.x, hero.y, 'hit');
+    }
+  }
+  if (hero.dashT > 0) {
+    hero.dashT -= dt;
+    moveActor(hero, hero.dashX * HERO_DASH_SPEED * dt, hero.dashY * HERO_DASH_SPEED * dt);
+  } else if (mx || my) {
     const len = Math.hypot(mx, my);
     moveActor(hero, (mx / len) * HERO_SPEED * dt, (my / len) * HERO_SPEED * dt);
   }
@@ -514,7 +559,7 @@ function updateHero(dt) {
   hero.aim = Math.atan2(aimY - hero.y, aimX - hero.x);
 
   hero.fireCd -= dt;
-  if (mouse.down && hero.fireCd <= 0) {
+  if (hero.hasGun && mouse.down && hero.fireCd <= 0) {
     hero.fireCd = HERO_FIRE_CD;
     bullets.push({ x: hero.x + Math.cos(hero.aim) * 14, y: hero.y + Math.sin(hero.aim) * 14,
       vx: Math.cos(hero.aim) * 440, vy: Math.sin(hero.aim) * 440,
@@ -751,8 +796,7 @@ function updateDens(dt) {
   for (let i = dens.length - 1; i >= 0; i--) {
     const den = dens[i];
     if (den.hp <= 0) {
-      gold += 30;
-      addFloater(den.x, den.y - 12, '+30g den destroyed!', '#e8c83a');
+      addFloater(den.x, den.y - 12, 'den destroyed!', '#80d0ff');
       addEffect(den.x, den.y, 'boom');
       announce('a wolf den was destroyed!', '#80d0ff');
       dens.splice(i, 1);
@@ -835,11 +879,7 @@ function updateBullets(dt) {
 function damageEnemy(en, dmg) {
   en.hp -= dmg;
   addEffect(en.x, en.y, 'hit');
-  if (en.hp <= 0) {
-    gold += en.gold;
-    addFloater(en.x - 8, en.y - 8, `+${en.gold}g`, '#e8c83a');
-    addEffect(en.x, en.y, 'boom');
-  }
+  if (en.hp <= 0) addEffect(en.x, en.y, 'boom');
 }
 function damageDen(den, dmg) {
   den.hp -= dmg;
@@ -963,13 +1003,16 @@ function drawViewport(cam, vx, vw, isBuilder) {
   // hero
   if (!hero.dead) {
     ctx.drawImage(SPR.hero, hero.x - 14, hero.y - 14, 28, 28);
-    ctx.save();
-    ctx.translate(hero.x, hero.y);
-    ctx.rotate(hero.aim);
-    ctx.fillStyle = '#22232e';
-    ctx.fillRect(6, -2, 12, 4);
-    ctx.restore();
-    drawBar(hero.x - 12, hero.y - 22, 24, hero.hp / HERO_MAX_HP, '#50d060');
+    if (hero.hasGun) {
+      ctx.save();
+      ctx.translate(hero.x, hero.y);
+      ctx.rotate(hero.aim);
+      ctx.fillStyle = '#22232e';
+      ctx.fillRect(6, -2, 12, 4);
+      ctx.restore();
+    }
+    drawBar(hero.x - 12, hero.y - 24, 24, hero.hp / HERO_MAX_HP, '#50d060');
+    drawBar(hero.x - 12, hero.y - 20, 24, hero.stam / HERO_STAM_MAX, '#e8c83a');
   }
 
   // bullets
@@ -1108,8 +1151,10 @@ function drawHUD() {
   ctx.fillStyle = '#e05050'; ctx.fillRect(440, 12, 130 * Math.max(0, hall.hp / hall.maxHp), 12);
   ctx.fillStyle = '#e8e0d0';
   ctx.fillText('hero', 400, 45);
-  ctx.fillStyle = '#40202a'; ctx.fillRect(440, 34, 130, 12);
-  ctx.fillStyle = '#50d060'; ctx.fillRect(440, 34, 130 * Math.max(0, hero.hp / HERO_MAX_HP), 12);
+  ctx.fillStyle = '#40202a'; ctx.fillRect(440, 34, 130, 8);
+  ctx.fillStyle = '#50d060'; ctx.fillRect(440, 34, 130 * Math.max(0, hero.hp / HERO_MAX_HP), 8);
+  ctx.fillStyle = '#40202a'; ctx.fillRect(440, 44, 130, 5);
+  ctx.fillStyle = '#e8c83a'; ctx.fillRect(440, 44, 130 * Math.max(0, hero.stam / HERO_STAM_MAX), 5);
 
   const tools = [
     ['Y', 'wall', `${COSTS.wall}g`], ['U', 'turret', `${COSTS.turret}g`],
@@ -1134,6 +1179,10 @@ function drawHUD() {
   ctx.font = '12px monospace';
   ctx.fillText('BUILDER', LEFT_VX + 8, HUD_H + 16);
   ctx.fillText('HERO', RIGHT_VX + 8, HUD_H + 16);
+  if (!hero.hasGun) {
+    ctx.fillStyle = '#e8c83a';
+    ctx.fillText(`bare-handed — buy pistol at hall: E (${PISTOL_COST}g)`, RIGHT_VX + 56, HUD_H + 16);
+  }
 
   // announcements
   ctx.font = 'bold 14px monospace';
@@ -1166,12 +1215,13 @@ function drawTitle() {
     'the world is dark. the HERO (right screen) explores it and finds gold deposits.',
     'the BUILDER (left screen) hires miners — they follow the hero into the wild.',
     'escort them to a deposit, clear the wolves, and they will mine and haul gold home.',
-    'destroy wolf dens to stop them respawning. defend the hall from raids!',
+    'gold ONLY comes from the mines. destroy wolf dens to stop them respawning!',
     '',
     'BUILDER — arrows: cursor (shift = fast)   Y/U/I/O: tool   enter: build/repair',
     'delete: sell    P: hire miner (needs houses)',
     '',
-    'HERO — WASD: move   mouse: aim   click: shoot   space: melee',
+    'HERO — WASD: move   shift: dash (stamina)   mouse: aim   space: punch',
+    `wolves are faster than you — dash away! buy a pistol at the hall: E (${PISTOL_COST}g)`,
     'stand near the hall to heal',
     '',
     'press ENTER or click to start',
