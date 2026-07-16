@@ -35,8 +35,8 @@ const HERO_SPEED = 80;                     // slower than a chasing wolf (95)
 const HERO_STAM_MAX = 100;
 const HERO_DASH_COST = 30;
 const HERO_DASH_SPEED = 460;
-const HERO_DASH_TIME = 0.16;
-const HERO_STAM_REGEN = 22;
+const HERO_DASH_TIME = 0.08;
+const HERO_STAM_REGEN = 11;
 const PISTOL_COST = 150;
 const HERO_FIRE_CD = 0.18;
 const HERO_BULLET_DMG = 7;
@@ -44,6 +44,10 @@ const MELEE_DMG = 12;
 const MELEE_CD = 0.45;
 const MELEE_RANGE = 46;
 const RESPAWN_TIME = 5;
+const WOOD_PER_SEC = 0.4;
+const STONE_PER_SEC = 0.25;
+const MEAT_PER_SEC = 0.15;
+const REVIVE_MEAT_COST = 10;
 const TURRET_RANGE = 150;
 const TURRET_CD = 0.7;
 const TURRET_DMG = 8;
@@ -53,7 +57,7 @@ const DANGER_RADIUS = 170;                 // monsters this close scare miners
 
 // ---------------------------------------------------------------- state
 let state = 'title';
-let time, gold, raid, raidT;
+let time, gold, wood, stone, meat, raid, raidT;
 let terrain, revealed, bgrid;
 let deposits, dens, enemies, miners, bullets, effects, floaters, announcements;
 let hall, hero, cursor, builderCam, heroCam;
@@ -81,7 +85,7 @@ function noise(x, y, seed) {
 }
 
 function newGame() {
-  time = 0; gold = 100; raid = 0; raidT = FIRST_RAID_AT;
+  time = 0; gold = 100; wood = 0; stone = 0; meat = REVIVE_MEAT_COST; raid = 0; raidT = FIRST_RAID_AT;
   deposits = []; dens = []; enemies = []; miners = [];
   bullets = []; effects = []; floaters = []; announcements = [];
   terrain = new Uint8Array(WT * HT);
@@ -465,6 +469,10 @@ function startRaid() {
 function update(dt) {
   time += dt;
 
+  wood += WOOD_PER_SEC * dt;
+  stone += STONE_PER_SEC * dt;
+  meat += MEAT_PER_SEC * dt;
+
   raidT -= dt;
   if (raidT <= 0) {
     startRaid();
@@ -515,12 +523,14 @@ function updateHero(dt) {
   if (hero.dead) {
     dashRequest = false;
     hero.respawn -= dt;
-    if (hero.respawn <= 0) {
+    if (hero.respawn <= 0 && meat >= REVIVE_MEAT_COST) {
+      meat -= REVIVE_MEAT_COST;
       hero.dead = false;
       hero.hp = HERO_MAX_HP;
       hero.stam = HERO_STAM_MAX;
       hero.dashT = 0;
       hero.x = hallCX(); hero.y = hallCY() + 2.2 * TILE;
+      addFloater(hero.x, hero.y - 16, `-${REVIVE_MEAT_COST} meat`, '#e07070');
     }
     return;
   }
@@ -1137,13 +1147,19 @@ function drawHUD() {
   ctx.font = 'bold 15px monospace';
   ctx.fillStyle = '#e8c83a';
   ctx.fillText(`gold ${Math.floor(gold)}`, 12, 23);
+  ctx.fillStyle = '#c8905a';
+  ctx.fillText(`wood ${Math.floor(wood)}`, 100, 23);
+  ctx.fillStyle = '#a0a0b0';
+  ctx.fillText(`stone ${Math.floor(stone)}`, 190, 23);
+  ctx.fillStyle = '#e07070';
+  ctx.fillText(`meat ${Math.floor(meat)}`, 290, 23);
+
   ctx.fillStyle = '#80d0ff';
   ctx.fillText(`miners ${miners.length}/${minerCap()}`, 12, 45);
-
   ctx.fillStyle = '#e8e0d0';
   const raiders = enemies.filter((e) => e.ai === 'raider').length;
-  ctx.fillText(raiders > 0 ? `RAID! ${raiders} attackers` : `raid ${raid + 1} in ${Math.ceil(raidT)}s`, 160, 23);
-  ctx.fillText(`deposits found ${deposits.filter((d) => d.discovered).length}/${deposits.length}`, 160, 45);
+  ctx.fillText(raiders > 0 ? `RAID! ${raiders}` : `raid ${raid + 1} in ${Math.ceil(raidT)}s`, 130, 45);
+  ctx.fillText(`mines ${deposits.filter((d) => d.discovered).length}/${deposits.length}`, 280, 45);
 
   ctx.fillStyle = '#e8e0d0';
   ctx.fillText('hall', 400, 23);
@@ -1222,7 +1238,7 @@ function drawTitle() {
     '',
     'HERO — WASD: move   shift: dash (stamina)   mouse: aim   space: punch',
     `wolves are faster than you — dash away! buy a pistol at the hall: E (${PISTOL_COST}g)`,
-    'stand near the hall to heal',
+    `stand near the hall to heal. reviving the hero costs ${REVIVE_MEAT_COST} meat!`,
     '',
     'press ENTER or click to start',
   ];
@@ -1256,7 +1272,10 @@ function draw() {
     ctx.fillStyle = '#ffd0d0';
     ctx.font = 'bold 16px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(`hero down! respawn in ${Math.ceil(hero.respawn)}...`, RIGHT_VX + RIGHT_VW / 2, HUD_H + 40);
+    const msg = hero.respawn > 0
+      ? `hero down! respawn in ${Math.ceil(hero.respawn)}...`
+      : `hero down! needs ${REVIVE_MEAT_COST} meat to revive (${Math.floor(meat)}/${REVIVE_MEAT_COST})`;
+    ctx.fillText(msg, RIGHT_VX + RIGHT_VW / 2, HUD_H + 40);
     ctx.textAlign = 'left';
   }
   if (state === 'title') drawTitle();
