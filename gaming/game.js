@@ -26,15 +26,27 @@ const T_GRASS = 0, T_FOREST = 1, T_MOUNTAIN = 2, T_DEPOSIT = 3;
 
 const COSTS = {
   wall: { wood: 10 },
-  turret: { stone: 25 },
   house: { wood: 20, stone: 10 },
 };
-const BUILDING_HP = { wall: 80, turret: 60, house: 50 };
+const BUILDING_HP = { wall: 80, house: 50 };
 const SELL_RATIO = 0.5;
 const BUILD_RADIUS = 14;                   // tiles from hall center
 const MINER_COST = 30;
 const MINER_CARRY = 25;
 const MINER_GATHER = 4;                    // gold per second while mining
+const LUMBER_COST = 25;
+const WOOD_PER_TREE = 8;
+const LUMBER_CARRY = 16;
+const CHOP_TIME = 3;                       // seconds to fell one tree
+const ARCHER_COST = 40;
+const ARCHER_CD = 2.2;                     // slow attack; retreats behind allies between shots
+const ARCHER_DMG = 12;
+const ARCHER_RANGE = 190;
+const KNIGHT_COST = 60;
+const KNIGHT_CD = 0.7;
+const KNIGHT_DMG = 12;
+const KNIGHT_RANGE = 42;
+const KNIGHT_KNOCKBACK = 10;               // knights keep the original heavy knockback
 const HALL_MAX_HP = 500;
 const HERO_MAX_HP = 60;
 const HERO_SPEED = 80;                     // slower than a chasing wolf (95)
@@ -49,7 +61,7 @@ const HERO_BULLET_DMG = 7;
 const MELEE_DMG = 12;
 const MELEE_CD = 0.45;
 const MELEE_RANGE = 46;
-const MELEE_ARC = Math.PI / 36;            // ±5° — a 10° precision jab
+const SPEAR_HALF_W = 6;                    // hero & knights hit like a spear: thin line, full length
 const RESPAWN_TIME = 5;
 const WOOD_PER_SEC = 0.6;
 const STONE_PER_SEC = 0.35;
@@ -60,9 +72,6 @@ const PORTAL_BREAK_TIME = 75;
 const ARENA_WT = 20, ARENA_HT = 18;
 const ARENA_W = ARENA_WT * TILE, ARENA_H = ARENA_HT * TILE;
 const ARENA_PAD = TILE + 12;               // keep actors off the arena walls
-const TURRET_RANGE = 150;
-const TURRET_CD = 0.7;
-const TURRET_DMG = 8;
 const HOUSE_TAX_EVERY = 6;
 const DANGER_RADIUS = 170;                 // monsters this close scare miners
 const HERO_SIGHT = 5;                      // fog reveal radius around the hero
@@ -77,7 +86,8 @@ const WOLF_LUNGE_CD = 1.4;
 let state = 'title';
 let time, gold, wood, stone, meat, portalLevel, portalT, portals;
 let terrain, revealed, bgrid;
-let deposits, dens, enemies, miners, bullets, effects, floaters, announcements;
+let deposits, dens, enemies, miners, lumberjacks, soldiers, bullets, effects, floaters, announcements;
+let stance;                                // 'garrison' | 'follow' — applies to all soldiers
 let hall, hero, cursor, builderCam, heroCam;
 let heroTileX = -1, heroTileY = -1;
 let minimapT = 0;
@@ -106,6 +116,7 @@ function newGame() {
   time = 0; gold = 100; wood = 0; stone = 0; meat = REVIVE_MEAT_COST;
   portalLevel = 0; portalT = FIRST_PORTAL_AT; portals = [];
   deposits = []; dens = []; enemies = []; miners = [];
+  lumberjacks = []; soldiers = []; stance = 'garrison';
   bullets = []; effects = []; floaters = []; announcements = [];
   terrain = new Uint8Array(WT * HT);
   revealed = new Uint8Array(WT * HT);
@@ -326,7 +337,7 @@ function setPathTo(a, tx, ty, ignoreBuildings) {
 const keys = {};
 let dashRequest = false;
 const mouse = { x: W / 2, y: H / 2, down: false };
-const TOOL_KEYS = { KeyY: 'wall', KeyU: 'turret', KeyI: 'house', KeyO: 'repair' };
+const TOOL_KEYS = { KeyY: 'wall', KeyI: 'house', KeyO: 'repair' };
 
 window.addEventListener('keydown', (e) => {
   if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Backspace'].includes(e.code)) e.preventDefault();
@@ -345,6 +356,10 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Enter') builderAction();
   if (e.code === 'Delete' || e.code === 'Backspace') sellAt(cursor.tx, cursor.ty);
   if (e.code === 'KeyP') hireMiner();
+  if (e.code === 'KeyL') hireLumberjack();
+  if (e.code === 'KeyJ') hireSoldier('archer');
+  if (e.code === 'KeyK') hireSoldier('knight');
+  if (e.code === 'KeyG') toggleStance();
   if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat) dashRequest = true;
   if (e.code === 'KeyE') { if (!tryEnterPortal()) buyPistol(); }
 });
@@ -415,7 +430,7 @@ function builderAction() {
   payCost(cost);
   if (terrain[idx(tx, ty)] === T_FOREST) terrain[idx(tx, ty)] = T_GRASS;
   const hp = BUILDING_HP[tool];
-  bgrid[idx(tx, ty)] = { kind: tool, hp, maxHp: hp, tx, ty, cd: 0, angle: 0, incomeTimer: 0 };
+  bgrid[idx(tx, ty)] = { kind: tool, hp, maxHp: hp, tx, ty, incomeTimer: 0 };
 }
 
 function sellAt(tx, ty) {
@@ -441,10 +456,12 @@ function countHouses() {
   for (const b of bgrid) if (b && b.kind === 'house' && b !== hall) n++;
   return n;
 }
-function minerCap() { return 2 + countHouses() * 2; }
+function workerCap() { return 2 + countHouses() * 2; }
+function workerCount() { return miners.length + lumberjacks.length; }
+function soldierCap() { return 2 + countHouses(); }
 
 function hireMiner() {
-  if (miners.length >= minerCap()) { announce('build houses to hire more miners', '#e05050'); return; }
+  if (workerCount() >= workerCap()) { announce('build houses to hire more workers', '#e05050'); return; }
   if (gold < MINER_COST) { announce('not enough gold to hire a miner', '#e05050'); return; }
   gold -= MINER_COST;
   miners.push({
@@ -453,6 +470,40 @@ function hireMiner() {
     path: null, pathIdx: 0, stuckT: 0, lastX: 0, lastY: 0,
   });
   announce('miner hired — the hero can escort them (they follow him)', '#80d0ff');
+}
+
+function hireLumberjack() {
+  if (workerCount() >= workerCap()) { announce('build houses to hire more workers', '#e05050'); return; }
+  if (gold < LUMBER_COST) { announce('not enough gold to hire a lumberjack', '#e05050'); return; }
+  gold -= LUMBER_COST;
+  lumberjacks.push({
+    x: hallCX() + (Math.random() - 0.5) * 40, y: hallCY() + 2.2 * TILE,
+    r: 8, hp: 30, maxHp: 30, state: 'idle', carry: 0, ttx: -1, tty: -1,
+    chopT: 0, wait: 0, path: null, pathIdx: 0, stuckT: 0, lastX: 0, lastY: 0,
+  });
+  announce('lumberjack hired — he will chop revealed trees on his own', '#c8905a');
+}
+
+function hireSoldier(type) {
+  if (soldiers.length >= soldierCap()) { announce('build houses to recruit more soldiers', '#e05050'); return; }
+  const cost = type === 'archer' ? ARCHER_COST : KNIGHT_COST;
+  if (gold < cost) { announce(`not enough gold to recruit a ${type}`, '#e05050'); return; }
+  gold -= cost;
+  soldiers.push({
+    type, x: hallCX() + (Math.random() - 0.5) * 40, y: hallCY() + 2.2 * TILE,
+    r: type === 'knight' ? 10 : 8,
+    hp: type === 'knight' ? 70 : 25, maxHp: type === 'knight' ? 70 : 25,
+    speed: type === 'knight' ? 100 : 95,
+    atkCd: 0, arena: null,
+  });
+  announce(`${type} recruited! (G toggles garrison / follow the hero)`, '#e8e0d0');
+}
+
+function toggleStance() {
+  stance = stance === 'garrison' ? 'follow' : 'garrison';
+  announce(stance === 'follow'
+    ? 'soldiers now FOLLOW the hero (and enter portals with him)'
+    : 'soldiers now GARRISON at the hall', '#e8e0d0');
 }
 
 function buyPistol() {
@@ -519,7 +570,19 @@ function tryEnterPortal() {
       hero.x = ARENA_W / 2; hero.y = ARENA_H - 2 * TILE;
       heroCam.x = (ARENA_W - RIGHT_VW) / 2;
       heroCam.y = (ARENA_H - VIEW_H) / 2;
-      announce('the hero entered the portal!', '#40e080');
+      // following soldiers close enough step through with him
+      let n = 0;
+      if (stance === 'follow') {
+        for (const s of soldiers) {
+          if (s.arena || Math.hypot(s.x - hero.retX, s.y - hero.retY) > 220) continue;
+          s.arena = p;
+          s.x = hero.x + (n % 2 ? -1 : 1) * (30 + 14 * Math.floor(n / 2));
+          s.y = hero.y + 26;
+          n++;
+        }
+      }
+      announce(n > 0 ? `the hero entered the portal with ${n} soldier${n === 1 ? '' : 's'}!`
+        : 'the hero entered the portal!', '#40e080');
       return true;
     }
   }
@@ -532,6 +595,13 @@ function clearPortal(p) {
   if (hero.arena === p) {
     hero.arena = null;
     hero.x = hero.retX; hero.y = hero.retY;
+  }
+  for (const s of soldiers) {
+    if (s.arena === p) {
+      s.arena = null;
+      s.x = hero.retX + (Math.random() - 0.5) * 50;
+      s.y = hero.retY + (Math.random() - 0.5) * 50;
+    }
   }
   portals.splice(portals.indexOf(p), 1);
   announce(`portal cleared! +${lootMeat} meat +${lootWood} wood +${lootStone} stone`, '#40e080');
@@ -560,13 +630,27 @@ function arenaMove(a, dx, dy) {
 
 function updateArena(dt) {
   const p = hero.arena;
+  const allies = [hero, ...soldiers.filter((s) => s.arena === p)];
   for (const m of p.mobs) {
-    if (wolfLunge(m, hero, dt, arenaMove)) {
-      hero.hp -= m.dmg;
-      addEffect(hero.x, hero.y, 'hit', 0, p);
-      if (hero.hp <= 0) {
+    let tgt = hero, td = Infinity;
+    for (const a of allies) {
+      const d = Math.hypot(a.x - m.x, a.y - m.y);
+      if (d < td) { tgt = a; td = d; }
+    }
+    if (wolfLunge(m, tgt, dt, arenaMove)) {
+      tgt.hp -= m.dmg;
+      addEffect(tgt.x, tgt.y, 'hit', 0, p);
+      if (tgt === hero && hero.hp <= 0) {
         hero.dead = true; hero.respawn = RESPAWN_TIME;
         hero.arena = null;
+        // his escort is thrown back out at the portal's mouth
+        for (const s of soldiers) {
+          if (s.arena === p) {
+            s.arena = null;
+            s.x = p.x + (Math.random() - 0.5) * 50;
+            s.y = p.y + (Math.random() - 0.5) * 50;
+          }
+        }
         announce('the hero fell inside the portal!', '#ff6060');
         return;
       }
@@ -609,6 +693,8 @@ function update(dt) {
   updateHero(dt);
   if (hero.arena && !hero.dead) updateArena(dt);
   updateMiners(dt);
+  updateLumberjacks(dt);
+  updateSoldiers(dt);
   updateEnemies(dt);
   updateDens(dt);
   updateBuildings(dt);
@@ -723,18 +809,17 @@ function updateHero(dt) {
   hero.meleeCd -= dt;
   if (keys.Space && hero.meleeCd <= 0) {
     hero.meleeCd = MELEE_CD;
-    addEffect(hero.x, hero.y, 'slash', hero.aim, hero.arena);
-    const inArc = (x, y, r) => {
-      const d = Math.hypot(x - hero.x, y - hero.y);
-      if (d > MELEE_RANGE + r) return false;
-      const angTo = Math.atan2(y - hero.y, x - hero.x);
-      let diff = Math.abs(angTo - hero.aim);
-      if (diff > Math.PI) diff = 2 * Math.PI - diff;
-      return diff < MELEE_ARC;
+    addEffect(hero.x, hero.y, 'stab', hero.aim, hero.arena);
+    // spear hitbox: distance from the target to the thrust segment, so enemies
+    // right in front are hit before anything behind them slips into an angle check
+    const dx = Math.cos(hero.aim), dy = Math.sin(hero.aim);
+    const hitBySpear = (x, y, r) => {
+      const t = clamp((x - hero.x) * dx + (y - hero.y) * dy, 0, MELEE_RANGE);
+      return Math.hypot(x - (hero.x + dx * t), y - (hero.y + dy * t)) < r + SPEAR_HALF_W;
     };
     const targets = hero.arena ? hero.arena.mobs : enemies;
     for (const en of targets) {
-      if (!inArc(en.x, en.y, en.r)) continue;
+      if (!hitBySpear(en.x, en.y, en.r)) continue;
       damageEnemy(en, MELEE_DMG, hero.arena);
       const angTo = Math.atan2(en.y - hero.y, en.x - hero.x);
       en.x += Math.cos(angTo) * 4;
@@ -742,7 +827,7 @@ function updateHero(dt) {
     }
     if (!hero.arena) {
       for (const den of dens) {
-        if (inArc(den.x, den.y, 16)) damageDen(den, MELEE_DMG);
+        if (hitBySpear(den.x, den.y, 16)) damageDen(den, MELEE_DMG);
       }
     }
   }
@@ -867,6 +952,177 @@ function goHome(m) {
   m.state = 'flee';
   setPathTo(m, hall.tx, hall.ty, false);
 }
+
+// ---------------------------------------------------------------- lumberjacks
+function findTree(l) {
+  let best = null, bd = Infinity;
+  for (let ty = 0; ty < HT; ty++) {
+    for (let tx = 0; tx < WT; tx++) {
+      const i = idx(tx, ty);
+      if (terrain[i] !== T_FOREST || !revealed[i]) continue;
+      if (Math.hypot(tx - hall.tx, ty - hall.ty) > 34) continue;   // stay near the kingdom
+      if (lumberjacks.some((o) => o !== l && o.ttx === tx && o.tty === ty)) continue;
+      const d = Math.hypot(tx * TILE - l.x, ty * TILE - l.y);
+      if (d < bd) { bd = d; best = { tx, ty }; }
+    }
+  }
+  if (best) {
+    l.ttx = best.tx; l.tty = best.ty;
+    l.state = 'go';
+    setPathTo(l, best.tx, best.ty, false);
+  }
+}
+
+function updateLumberjacks(dt) {
+  const hx = hallCX(), hy = hallCY();
+  for (let i = lumberjacks.length - 1; i >= 0; i--) {
+    const l = lumberjacks[i];
+    const moved = Math.hypot(l.x - l.lastX, l.y - l.lastY);
+    l.lastX = l.x; l.lastY = l.y;
+    if (l.path && moved < 0.3) l.stuckT += dt; else l.stuckT = 0;
+    const danger = nearestDanger(l.x, l.y, DANGER_RADIUS);
+
+    if (l.state === 'idle') {
+      l.wait -= dt;
+      if (l.wait <= 0) { findTree(l); l.wait = 2; }
+    } else if (l.state === 'go') {
+      if (danger) { goHome(l); }
+      else if (terrain[idx(l.ttx, l.tty)] !== T_FOREST) { l.state = 'idle'; l.path = null; }
+      else {
+        followPath(l, 100, dt);
+        if (l.stuckT > 1) { setPathTo(l, l.ttx, l.tty, false); l.stuckT = 0; }
+        const tx2 = (l.ttx + 0.5) * TILE, ty2 = (l.tty + 0.5) * TILE;
+        if (Math.hypot(tx2 - l.x, ty2 - l.y) < 40) { l.state = 'chop'; l.chopT = CHOP_TIME; l.path = null; }
+        else if (!l.path || l.pathIdx >= l.path.length) setPathTo(l, l.ttx, l.tty, false);
+      }
+    } else if (l.state === 'chop') {
+      if (danger) { goHome(l); }
+      else {
+        l.chopT -= dt;
+        if (Math.random() < dt * 3) addEffect((l.ttx + 0.5) * TILE, (l.tty + 0.5) * TILE, 'hit');
+        if (l.chopT <= 0) {
+          if (terrain[idx(l.ttx, l.tty)] === T_FOREST) terrain[idx(l.ttx, l.tty)] = T_GRASS;
+          l.carry += WOOD_PER_TREE;
+          if (l.carry >= LUMBER_CARRY) { l.state = 'return'; setPathTo(l, hall.tx, hall.ty, false); }
+          else l.state = 'idle';
+        }
+      }
+    } else if (l.state === 'return' || l.state === 'flee') {
+      followPath(l, l.state === 'flee' ? 150 : 100, dt);
+      if (l.stuckT > 1) { setPathTo(l, hall.tx, hall.ty, false); l.stuckT = 0; }
+      if (!l.path || l.pathIdx >= l.path.length || Math.hypot(hx - l.x, hy - l.y) < 90) {
+        if (l.carry > 0) {
+          wood += l.carry;
+          addFloater(l.x, l.y - 12, `+${l.carry} wood`, '#c8905a');
+          l.carry = 0;
+        }
+        l.state = 'idle';
+        l.path = null;
+      }
+    }
+
+    if (l.hp <= 0) {
+      addEffect(l.x, l.y, 'boom');
+      announce('a lumberjack was killed!', '#ff6060');
+      lumberjacks.splice(i, 1);
+    }
+  }
+}
+
+// ---------------------------------------------------------------- soldiers
+function soldierAnchor(s, dt, moveFn) {
+  if (s.arena) return;                       // inside a cleared corner of the arena: hold
+  const i = soldiers.indexOf(s);
+  const ang = (i / Math.max(1, soldiers.length)) * Math.PI * 2;
+  let ax, ay;
+  if (stance === 'follow' && !hero.dead && !hero.arena) {
+    ax = hero.x + Math.cos(ang) * 44; ay = hero.y + Math.sin(ang) * 44;
+  } else {
+    ax = hallCX() + Math.cos(ang) * 80; ay = hallCY() + Math.sin(ang) * 80;
+  }
+  const d = Math.hypot(ax - s.x, ay - s.y);
+  if (d > 14) moveFn(s, ((ax - s.x) / d) * s.speed * dt, ((ay - s.y) / d) * s.speed * dt);
+}
+
+function updateSoldiers(dt) {
+  for (let i = soldiers.length - 1; i >= 0; i--) {
+    const s = soldiers[i];
+    s.atkCd -= dt;
+    const inArena = !!s.arena;
+    const foes = inArena ? s.arena.mobs : enemies;
+    const moveFn = inArena ? arenaMove : moveActor;
+
+    let tgt = null, td = s.type === 'archer' ? ARCHER_RANGE + 80 : 240;
+    for (const en of foes) {
+      const d = Math.hypot(en.x - s.x, en.y - s.y);
+      if (d < td) { tgt = en; td = d; }
+    }
+
+    if (s.type === 'knight') {
+      if (tgt) {
+        if (td > KNIGHT_RANGE - 8) {
+          moveFn(s, ((tgt.x - s.x) / td) * s.speed * dt, ((tgt.y - s.y) / td) * s.speed * dt);
+        }
+        if (td < KNIGHT_RANGE + tgt.r && s.atkCd <= 0) {
+          s.atkCd = KNIGHT_CD;
+          const aim = Math.atan2(tgt.y - s.y, tgt.x - s.x);
+          addEffect(s.x, s.y, 'stab', aim, s.arena);
+          // spear hitbox like the hero's, but with the heavy knockback
+          const kdx = Math.cos(aim), kdy = Math.sin(aim);
+          for (const en of foes) {
+            const t = clamp((en.x - s.x) * kdx + (en.y - s.y) * kdy, 0, KNIGHT_RANGE);
+            if (Math.hypot(en.x - (s.x + kdx * t), en.y - (s.y + kdy * t)) > en.r + SPEAR_HALF_W) continue;
+            damageEnemy(en, KNIGHT_DMG, s.arena);
+            en.x += Math.cos(aim) * KNIGHT_KNOCKBACK;
+            en.y += Math.sin(aim) * KNIGHT_KNOCKBACK;
+          }
+        }
+      } else soldierAnchor(s, dt, moveFn);
+    } else {                                   // archer
+      if (tgt) {
+        if (s.atkCd <= 0) {
+          if (td < ARCHER_RANGE) {
+            s.atkCd = ARCHER_CD;
+            const ang = Math.atan2(tgt.y - s.y, tgt.x - s.x);
+            bullets.push({ x: s.x + Math.cos(ang) * 10, y: s.y + Math.sin(ang) * 10,
+              vx: Math.cos(ang) * 330, vy: Math.sin(ang) * 330,
+              dmg: ARCHER_DMG, life: ARCHER_RANGE / 330, hero: false, space: s.arena });
+          } else {
+            moveFn(s, ((tgt.x - s.x) / td) * s.speed * dt, ((tgt.y - s.y) / td) * s.speed * dt);
+          }
+        } else if (td < 150) {
+          // reloading: fall back behind the nearest melee ally
+          let ally = null, ad = Infinity;
+          const protectors = [];
+          if (!hero.dead && (inArena ? hero.arena === s.arena : !hero.arena)) protectors.push(hero);
+          for (const o of soldiers) {
+            if (o !== s && o.type === 'knight' && o.arena === s.arena) protectors.push(o);
+          }
+          for (const o of protectors) {
+            const d = Math.hypot(o.x - s.x, o.y - s.y);
+            if (d < ad) { ally = o; ad = d; }
+          }
+          let dx, dy;
+          if (ally) {
+            const behind = Math.atan2(ally.y - tgt.y, ally.x - tgt.x);
+            const destX = ally.x + Math.cos(behind) * 30;
+            const destY = ally.y + Math.sin(behind) * 30;
+            const dd = Math.hypot(destX - s.x, destY - s.y);
+            if (dd > 6) { dx = (destX - s.x) / dd; dy = (destY - s.y) / dd; }
+          }
+          if (dx === undefined) { dx = (s.x - tgt.x) / td; dy = (s.y - tgt.y) / td; }
+          moveFn(s, dx * s.speed * dt, dy * s.speed * dt);
+        }
+      } else soldierAnchor(s, dt, moveFn);
+    }
+
+    if (s.hp <= 0) {
+      addEffect(s.x, s.y, 'boom', 0, s.arena);
+      announce(`${s.type === 'archer' ? 'an archer' : 'a knight'} has fallen!`, '#ff6060');
+      soldiers.splice(i, 1);
+    }
+  }
+}
 function startReturn(m) {
   m.state = 'return';
   setPathTo(m, hall.tx, hall.ty, false);
@@ -910,7 +1166,8 @@ function updateEnemies(dt) {
     if (en.ai === 'wolf') {
       // pick a victim: hero or a miner, close to us and not too far from the den
       let victim = null, vd = 175;
-      const candidates = (hero.dead || hero.arena) ? miners : [hero, ...miners];
+      const worldAllies = [...miners, ...lumberjacks, ...soldiers.filter((s) => !s.arena)];
+      const candidates = (hero.dead || hero.arena) ? worldAllies : [hero, ...worldAllies];
       for (const c of candidates) {
         const d = Math.hypot(c.x - en.x, c.y - en.y);
         if (d < vd && Math.hypot(c.x - en.home.x, c.y - en.home.y) < 360) { victim = c; vd = d; }
@@ -949,9 +1206,10 @@ function updateEnemies(dt) {
         addEffect((target.tx + 0.5) * TILE, (target.ty + 0.5) * TILE, 'hit');
         if (target.hp <= 0) destroyBuilding(target);
       }
-      // swipe at the hero or miners on the way past
+      // swipe at the hero or anyone else on the way past
       if (en.atkCd <= 0) {
-        const candidates = (hero.dead || hero.arena) ? miners : [hero, ...miners];
+        const worldAllies = [...miners, ...lumberjacks, ...soldiers.filter((s) => !s.arena)];
+        const candidates = (hero.dead || hero.arena) ? worldAllies : [hero, ...worldAllies];
         for (const c of candidates) {
           if (Math.hypot(c.x - en.x, c.y - en.y) < en.r + c.r + 4) {
             en.atkCd = 0.8;
@@ -1002,25 +1260,8 @@ function updateBuildings(dt) {
     const b = bgrid[i];
     if (!b || b === hall || seen.has(b)) continue;
     seen.add(b);
-    const bx = (b.tx + 0.5) * TILE, by = (b.ty + 0.5) * TILE;
 
-    if (b.kind === 'turret') {
-      b.cd -= dt;
-      let best = null, bd = TURRET_RANGE;
-      for (const en of enemies) {
-        const d = Math.hypot(en.x - bx, en.y - by);
-        if (d < bd) { best = en; bd = d; }
-      }
-      if (best) {
-        b.angle = Math.atan2(best.y - by, best.x - bx);
-        if (b.cd <= 0) {
-          b.cd = TURRET_CD;
-          bullets.push({ x: bx + Math.cos(b.angle) * 12, y: by + Math.sin(b.angle) * 12,
-            vx: Math.cos(b.angle) * 300, vy: Math.sin(b.angle) * 300,
-            dmg: TURRET_DMG, life: 0.7, hero: false });
-        }
-      }
-    } else if (b.kind === 'house') {
+    if (b.kind === 'house') {
       b.incomeTimer += dt;
       if (b.incomeTimer >= HOUSE_TAX_EVERY) {
         b.incomeTimer -= HOUSE_TAX_EVERY;
@@ -1085,7 +1326,7 @@ function damageDen(den, dmg) {
 }
 
 function addEffect(x, y, type, angle = 0, space = null) {
-  effects.push({ x, y, type, angle, space, life: type === 'slash' ? 0.15 : 0.2 });
+  effects.push({ x, y, type, angle, space, life: type === 'stab' ? 0.15 : 0.2 });
 }
 function addFloater(x, y, text, color) {
   floaters.push({ x, y, text, color, life: 1.4 });
@@ -1167,22 +1408,28 @@ function drawViewport(cam, vx, vw, isBuilder) {
       if (b.kind === 'hall') ctx.drawImage(SPR.hall, px, py, TILE * 2, TILE * 2);
       else if (b.kind === 'wall') ctx.drawImage(SPR.wall, px, py, TILE, TILE);
       else if (b.kind === 'house') ctx.drawImage(SPR.house, px, py, TILE, TILE);
-      else if (b.kind === 'turret') {
-        ctx.drawImage(SPR.turretBase, px, py, TILE, TILE);
-        ctx.save();
-        ctx.translate(px + TILE / 2, py + TILE / 2);
-        ctx.rotate(b.angle);
-        ctx.fillStyle = '#2f2f3a';
-        ctx.fillRect(0, -3, 16, 6);
-        ctx.fillStyle = '#55555f';
-        ctx.fillRect(12, -4, 5, 8);
-        ctx.restore();
-      }
       if (b.hp < b.maxHp) {
         const w = b.kind === 'hall' ? TILE * 2 : TILE;
         drawBar(px + 2, py - 6, w - 4, b.hp / b.maxHp, '#e05050');
       }
     }
+  }
+
+  // lumberjacks
+  for (const l of lumberjacks) {
+    ctx.drawImage(SPR.lumber, l.x - 13, l.y - 13, 26, 26);
+    if (l.carry > 0) {
+      ctx.fillStyle = '#c8905a';
+      ctx.fillRect(l.x - 3, l.y - 16, 6, 4);
+    }
+    if (l.hp < l.maxHp) drawBar(l.x - 10, l.y - 20, 20, l.hp / l.maxHp, '#50d060');
+  }
+
+  // soldiers (world side only — arena ones are drawn in drawArena)
+  for (const s of soldiers) {
+    if (s.arena) continue;
+    ctx.drawImage(SPR[s.type], s.x - 13, s.y - 13, 26, 26);
+    if (s.hp < s.maxHp) drawBar(s.x - 10, s.y - 20, 20, s.hp / s.maxHp, '#50d060');
   }
 
   // miners
@@ -1232,11 +1479,12 @@ function drawViewport(cam, vx, vw, isBuilder) {
       ctx.beginPath();
       ctx.arc(fx.x, fx.y, (0.2 - fx.life) * 90 + 6, 0, Math.PI * 2);
       ctx.fill();
-    } else if (fx.type === 'slash') {
+    } else if (fx.type === 'stab') {
       ctx.strokeStyle = `rgba(255,255,220,${fx.life * 6})`;
-      ctx.lineWidth = 4;
+      ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.arc(fx.x, fx.y, MELEE_RANGE - 6, fx.angle - MELEE_ARC, fx.angle + MELEE_ARC);
+      ctx.moveTo(fx.x + Math.cos(fx.angle) * 8, fx.y + Math.sin(fx.angle) * 8);
+      ctx.lineTo(fx.x + Math.cos(fx.angle) * MELEE_RANGE, fx.y + Math.sin(fx.angle) * MELEE_RANGE);
       ctx.stroke();
     }
   }
@@ -1268,12 +1516,6 @@ function drawViewport(cam, vx, vw, isBuilder) {
     ctx.strokeStyle = ok ? '#60ff80' : '#ff6060';
     ctx.lineWidth = 2;
     ctx.strokeRect(px + 1, py + 1, TILE - 2, TILE - 2);
-    if (cursor.tool === 'turret' && ok) {
-      ctx.strokeStyle = 'rgba(96,255,128,0.25)';
-      ctx.beginPath();
-      ctx.arc(px + TILE / 2, py + TILE / 2, TURRET_RANGE, 0, Math.PI * 2);
-      ctx.stroke();
-    }
   }
 
   ctx.restore();
@@ -1356,6 +1598,12 @@ function drawArena() {
     if (!m.isBoss && m.hp < m.maxHp) drawBar(m.x - 12, m.y - s / 2 - 6, 24, m.hp / m.maxHp, '#e05050');
   }
 
+  for (const s of soldiers) {
+    if (s.arena !== p) continue;
+    ctx.drawImage(SPR[s.type], s.x - 13, s.y - 13, 26, 26);
+    if (s.hp < s.maxHp) drawBar(s.x - 10, s.y - 20, 20, s.hp / s.maxHp, '#50d060');
+  }
+
   if (!hero.dead) drawHero();
 
   for (const bl of bullets) {
@@ -1373,11 +1621,12 @@ function drawArena() {
       ctx.beginPath();
       ctx.arc(fx.x, fx.y, (0.2 - fx.life) * 90 + 6, 0, Math.PI * 2);
       ctx.fill();
-    } else if (fx.type === 'slash') {
+    } else if (fx.type === 'stab') {
       ctx.strokeStyle = `rgba(255,255,220,${fx.life * 6})`;
-      ctx.lineWidth = 4;
+      ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.arc(fx.x, fx.y, MELEE_RANGE - 6, fx.angle - MELEE_ARC, fx.angle + MELEE_ARC);
+      ctx.moveTo(fx.x + Math.cos(fx.angle) * 8, fx.y + Math.sin(fx.angle) * 8);
+      ctx.lineTo(fx.x + Math.cos(fx.angle) * MELEE_RANGE, fx.y + Math.sin(fx.angle) * MELEE_RANGE);
       ctx.stroke();
     }
   }
@@ -1432,6 +1681,8 @@ function drawMinimap() {
     ctx.fillRect(mx + (x / TILE) * scale - s / 2, my + (y / TILE) * scale - s / 2, s, s);
   };
   for (const m of miners) dot(m.x, m.y, '#80d0ff', 2);
+  for (const l of lumberjacks) dot(l.x, l.y, '#c8905a', 2);
+  for (const s of soldiers) if (!s.arena) dot(s.x, s.y, '#e8e0d0', 2);
   for (const en of enemies) if (en.ai === 'raider') dot(en.x, en.y, '#ff4040', 3);
   for (const p of portals) if (time % 0.8 < 0.5) dot(p.x, p.y, '#40e080', 4);
   if (!hero.dead && !hero.arena) dot(hero.x, hero.y, '#ffffff', 3);
@@ -1460,20 +1711,20 @@ function drawHUD() {
   ctx.fillText(`meat ${Math.floor(meat)}`, 290, 23);
 
   ctx.fillStyle = '#80d0ff';
-  ctx.fillText(`miners ${miners.length}/${minerCap()}`, 12, 45);
+  ctx.fillText(`workers ${workerCount()}/${workerCap()}`, 12, 45);
+  ctx.fillStyle = '#c0c0d0';
+  ctx.fillText(`troops ${soldiers.length}/${soldierCap()}`, 140, 45);
   const raiders = enemies.filter((e) => e.ai === 'raider').length;
   if (raiders > 0) {
     ctx.fillStyle = '#ff6060';
-    ctx.fillText(`LOOSE! ${raiders}`, 130, 45);
+    ctx.fillText(`LOOSE! ${raiders}`, 255, 45);
   } else if (portals.length > 0) {
     ctx.fillStyle = '#40e080';
-    ctx.fillText(`breaks in ${Math.ceil(Math.min(...portals.map((p) => p.t)))}s`, 130, 45);
+    ctx.fillText(`breaks in ${Math.ceil(Math.min(...portals.map((p) => p.t)))}s`, 255, 45);
   } else {
     ctx.fillStyle = '#e8e0d0';
-    ctx.fillText(`portal in ${Math.ceil(portalT)}s`, 130, 45);
+    ctx.fillText(`portal in ${Math.ceil(portalT)}s`, 255, 45);
   }
-  ctx.fillStyle = '#e8e0d0';
-  ctx.fillText(`mines ${deposits.filter((d) => d.discovered).length}/${deposits.length}`, 280, 45);
 
   ctx.fillStyle = '#e8e0d0';
   ctx.fillText('hall', 400, 23);
@@ -1487,27 +1738,31 @@ function drawHUD() {
   ctx.fillStyle = '#e8c83a'; ctx.fillRect(440, 44, 130 * Math.max(0, hero.stam / HERO_STAM_MAX), 5);
 
   const tools = [
-    ['Y', 'wall', costText(COSTS.wall)], ['U', 'turret', costText(COSTS.turret)],
-    ['I', 'house', costText(COSTS.house)], ['O', 'repair', 'gold'],
-    ['P', 'hire', `${MINER_COST}g`],
+    ['Y', 'wall', costText(COSTS.wall)], ['I', 'house', costText(COSTS.house)],
+    ['O', 'repair', 'gold'],
+    ['P', 'miner', `${MINER_COST}g`], ['L', 'lumber', `${LUMBER_COST}g`],
+    ['J', 'archer', `${ARCHER_COST}g`], ['K', 'knight', `${KNIGHT_COST}g`],
   ];
-  let x = 620;
+  let x = 600;
   for (const [key, name, cost] of tools) {
-    const sel = cursor.tool === name;
+    const sel = cursor.tool === name || (name === 'wall' && cursor.tool === 'wall');
     ctx.fillStyle = sel ? '#3a3454' : '#1c1828';
-    ctx.fillRect(x, 6, 92, 44);
-    if (sel) { ctx.strokeStyle = '#8a80c0'; ctx.strokeRect(x + 0.5, 6.5, 91, 43); }
+    ctx.fillRect(x, 6, 88, 44);
+    if (sel) { ctx.strokeStyle = '#8a80c0'; ctx.strokeRect(x + 0.5, 6.5, 87, 43); }
     ctx.fillStyle = sel ? '#fff' : '#a8a0b8';
     ctx.font = 'bold 13px monospace';
-    ctx.fillText(`${key} ${name}`, x + 7, 24);
+    ctx.fillText(`${key} ${name}`, x + 6, 24);
     ctx.fillStyle = '#e8c83a';
-    ctx.fillText(cost, x + 7, 43);
-    x += 98;
+    ctx.fillText(cost, x + 6, 43);
+    x += 94;
   }
 
   ctx.fillStyle = '#6a6480';
   ctx.font = '12px monospace';
   ctx.fillText('BUILDER', LEFT_VX + 8, HUD_H + 16);
+  ctx.fillStyle = stance === 'follow' ? '#40e080' : '#a8a0b8';
+  ctx.fillText(`troops: ${stance} (G)`, LEFT_VX + 80, HUD_H + 16);
+  ctx.fillStyle = '#6a6480';
   ctx.fillText('HERO', RIGHT_VX + 8, HUD_H + 16);
   if (!hero.hasGun) {
     ctx.fillStyle = '#e8c83a';
@@ -1548,8 +1803,8 @@ function drawTitle() {
     'GREEN PORTALS open in the wild — walk in (E) and slay the ALPHA WOLF inside,',
     'or the timer runs out, the portal breaks, and its monsters charge the hall!',
     '',
-    'BUILDER — arrows: cursor (shift = fast)   Y/U/I/O: tool   enter: build/repair',
-    `delete: sell   P: hire miner (${MINER_COST}g)   wall ${costText(COSTS.wall)}   turret ${costText(COSTS.turret)}   house ${costText(COSTS.house)}`,
+    'BUILDER — arrows: cursor (shift = fast)   Y wall / I house / O repair   enter: build',
+    `hire — P miner  L lumberjack  J archer  K knight   G: garrison / follow the hero`,
     '',
     'HERO — WASD: move   shift: dash (stamina)   mouse: aim   space: punch   E: portal/shop',
     `wolves are faster than you — dash away! pistol at the hall: E (${PISTOL_COST}g)`,

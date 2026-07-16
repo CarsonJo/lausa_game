@@ -46,6 +46,18 @@ SPR.hero = makeSprite(HUMAN_ROWS,
 SPR.miner = makeSprite(HUMAN_ROWS,
   { h: '#e8c83a', f: '#e8b88a', e: '#22232e', b: '#7a5a3a', s: '#33333e' });
 
+// lumberjack: green cap, tan work clothes
+SPR.lumber = makeSprite(HUMAN_ROWS,
+  { h: '#3a7534', f: '#e8b88a', e: '#22232e', b: '#8a6a3a', s: '#33333e' });
+
+// archer: green hood and tunic
+SPR.archer = makeSprite(HUMAN_ROWS,
+  { h: '#2f6f3a', f: '#e8b88a', e: '#22232e', b: '#4a8a52', s: '#33333e' });
+
+// knight: steel helmet and armor
+SPR.knight = makeSprite(HUMAN_ROWS,
+  { h: '#8a8a96', f: '#e8b88a', e: '#22232e', b: '#6a6a78', s: '#33333e' });
+
 SPR.grunt = makeSprite([
   '................',
   '....gggggggg....',
