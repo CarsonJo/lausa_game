@@ -115,6 +115,25 @@ SPR.wolf = makeSprite([
   '................',
 ], { w: '#9a9aa6', r: '#e03030', d: '#5a5a66' });
 
+SPR.spirit = makeSprite([
+  '................',
+  '.....bbbbbb.....',
+  '....bbbbbbbb....',
+  '...bbbbbbbbbb...',
+  '...bbwbbbbwbb...',
+  '...bbwbbbbwbb...',
+  '...bbbbbbbbbb...',
+  '...bbbbddbbbb...',
+  '...bbbbbbbbbb...',
+  '....bbbbbbbb....',
+  '....bb.bb.bb....',
+  '....b...b..b....',
+  '................',
+  '................',
+  '................',
+  '................',
+], { b: '#7ab0ff', w: '#ffffff', d: '#2a4a8a' });
+
 // brick wall, generated
 SPR.wall = (() => {
   const rows = [];

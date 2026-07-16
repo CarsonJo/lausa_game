@@ -69,6 +69,21 @@ const MEAT_PER_SEC = 0.15;
 const REVIVE_MEAT_COST = 10;
 const FIRST_PORTAL_AT = 100;
 const PORTAL_BREAK_TIME = 75;
+const FRAGMENTS_NEEDED = 3;                // clears of one color to forge its weapon
+const PORTAL_TYPES = {
+  green: {
+    label: 'GREEN', hex: '#40e080', rgb: '64,224,128', floor: ['#152318', '#182a1b'],
+    boss: 'ALPHA WOLF', weapon: 'spear', weaponName: 'Fang Spear',
+  },
+  red: {
+    label: 'RED', hex: '#ff5a50', rgb: '255,90,80', floor: ['#2a1512', '#241210'],
+    boss: 'BRUTE WARLORD', weapon: 'crossbow', weaponName: 'Goblin Crossbow',
+  },
+  blue: {
+    label: 'BLUE', hex: '#60a0ff', rgb: '96,160,255', floor: ['#101a2e', '#0e1626'],
+    boss: 'GRAND SPIRIT', weapon: 'blade', weaponName: 'Spirit Blade',
+  },
+};
 const ARENA_WT = 20, ARENA_HT = 18;
 const ARENA_W = ARENA_WT * TILE, ARENA_H = ARENA_HT * TILE;
 const ARENA_PAD = TILE + 12;               // keep actors off the arena walls
@@ -84,7 +99,7 @@ const WOLF_LUNGE_CD = 1.4;
 
 // ---------------------------------------------------------------- state
 let state = 'title';
-let time, gold, wood, stone, meat, portalLevel, portalT, portals;
+let time, gold, wood, stone, meat, portalLevel, portalT, portals, fragments;
 let terrain, revealed, bgrid;
 let deposits, dens, enemies, miners, lumberjacks, soldiers, bullets, effects, floaters, announcements;
 let stance;                                // 'garrison' | 'follow' — applies to all soldiers
@@ -115,6 +130,7 @@ function noise(x, y, seed) {
 function newGame() {
   time = 0; gold = 100; wood = 0; stone = 0; meat = REVIVE_MEAT_COST;
   portalLevel = 0; portalT = FIRST_PORTAL_AT; portals = [];
+  fragments = { green: 0, red: 0, blue: 0 };
   deposits = []; dens = []; enemies = []; miners = [];
   lumberjacks = []; soldiers = []; stance = 'garrison';
   bullets = []; effects = []; floaters = []; announcements = [];
@@ -524,22 +540,35 @@ function buyPistol() {
 
 // ---------------------------------------------------------------- portals
 // Portals open in the wild. Enter one (E) to fight its monsters in an arena;
-// clear it for loot. If its timer runs out, it breaks and the monsters charge the hall.
-function arenaWolf(isBoss, level, i) {
-  if (isBoss) {
-    const hp = 120 + level * 30;
-    return { spr: 'wolf', isBoss: true, size: 52, r: 15, hp, maxHp: hp, dmg: 16, speed: 72,
-      atkCd: 0, x: ARENA_W / 2, y: 2.5 * TILE };
+// clear it for loot + a weapon fragment. If its timer runs out, it breaks and
+// TWICE the monsters still inside charge the hall.
+function portalMob(type, isBoss, level, i) {
+  const px = TILE * 3 + (i % 5) * ((ARENA_W - TILE * 6) / 4);
+  const py = TILE * (4 + Math.floor(i / 5) * 2);
+  const bossPos = { x: ARENA_W / 2, y: 2.5 * TILE };
+  let m;
+  if (type === 'green') {
+    m = isBoss
+      ? { spr: 'wolf', atk: 'lunge', size: 52, r: 15, hp: 120 + level * 30, dmg: 16, speed: 72 }
+      : { spr: 'wolf', atk: 'lunge', size: 26, r: 9, hp: 24 + level * 4, dmg: 8, speed: 95 };
+  } else if (type === 'red') {
+    m = isBoss
+      ? { spr: 'brute', atk: 'chase', size: 56, r: 16, hp: 160 + level * 35, dmg: 22, speed: 45 }
+      : { spr: 'grunt', atk: 'chase', size: 26, r: 9, hp: 20 + level * 5, dmg: 6, speed: 85 };
+  } else {
+    m = isBoss
+      ? { spr: 'spirit', atk: 'chase', size: 48, r: 14, hp: 100 + level * 25, dmg: 12, speed: 100 }
+      : { spr: 'spirit', atk: 'chase', size: 24, r: 8, hp: 12 + level * 3, dmg: 5, speed: 130 };
   }
-  const hp = 24 + level * 4;
-  return { spr: 'wolf', isBoss: false, size: 26, r: 9, hp, maxHp: hp, dmg: 8, speed: 95,
-    atkCd: 0,
-    x: TILE * 3 + (i % 5) * ((ARENA_W - TILE * 6) / 4),
-    y: TILE * (4 + Math.floor(i / 5) * 2) };
+  return { ...m, isBoss, maxHp: m.hp, atkCd: 0,
+    x: isBoss ? bossPos.x : px, y: isBoss ? bossPos.y : py };
 }
 
 function spawnPortal() {
   portalLevel++;
+  const types = Object.keys(PORTAL_TYPES);
+  const type = types[Math.floor(Math.random() * types.length)];
+  const cfg = PORTAL_TYPES[type];
   for (let t = 0; t < 80; t++) {
     const ang = Math.random() * Math.PI * 2;
     const dist = 20 + Math.random() * 10;
@@ -549,14 +578,14 @@ function spawnPortal() {
     const dir = Math.abs(Math.cos(ang)) > Math.abs(Math.sin(ang))
       ? (Math.cos(ang) > 0 ? 'east' : 'west')
       : (Math.sin(ang) > 0 ? 'south' : 'north');
+    const counts = { green: 2 + portalLevel, red: 3 + portalLevel, blue: 4 + portalLevel };
     const mobs = [];
-    const wolves = 2 + portalLevel;
-    for (let i = 0; i < wolves; i++) mobs.push(arenaWolf(false, portalLevel, i));
-    mobs.push(arenaWolf(true, portalLevel, 0));
-    portals.push({ x: (tx + 0.5) * TILE, y: (ty + 0.5) * TILE, color: 'green',
+    for (let i = 0; i < counts[type]; i++) mobs.push(portalMob(type, false, portalLevel, i));
+    mobs.push(portalMob(type, true, portalLevel, 0));
+    portals.push({ x: (tx + 0.5) * TILE, y: (ty + 0.5) * TILE, type,
       t: PORTAL_BREAK_TIME, level: portalLevel, mobs });
     revealCircle(tx, ty, 3);
-    announce(`a GREEN portal opened to the ${dir} — clear it before it breaks!`, '#40e080');
+    announce(`a ${cfg.label} portal opened to the ${dir} — clear it before it breaks!`, cfg.hex);
     return;
   }
 }
@@ -589,9 +618,17 @@ function tryEnterPortal() {
   return false;
 }
 
+function portalLoot(p) {
+  const lv = p.level;
+  if (p.type === 'green') return { meat: 14 + lv * 3, wood: 8, stone: 4 };
+  if (p.type === 'red') return { wood: 14 + lv * 2, stone: 12 + lv * 2, meat: 4 };
+  return { stone: 10 + lv * 2, meat: 8 + lv, wood: 8 };
+}
+
 function clearPortal(p) {
-  const lootMeat = 12 + p.level * 3, lootWood = 10, lootStone = 8;
-  meat += lootMeat; wood += lootWood; stone += lootStone;
+  const cfg = PORTAL_TYPES[p.type];
+  const loot = portalLoot(p);
+  wood += loot.wood || 0; stone += loot.stone || 0; meat += loot.meat || 0;
   if (hero.arena === p) {
     hero.arena = null;
     hero.x = hero.retX; hero.y = hero.retY;
@@ -604,7 +641,14 @@ function clearPortal(p) {
     }
   }
   portals.splice(portals.indexOf(p), 1);
-  announce(`portal cleared! +${lootMeat} meat +${lootWood} wood +${lootStone} stone`, '#40e080');
+  const parts = Object.entries(loot).map(([k, v]) => `+${v} ${k}`).join(' ');
+  announce(`portal cleared! ${parts}`, cfg.hex);
+  if (fragments[p.type] < FRAGMENTS_NEEDED) {
+    fragments[p.type]++;
+    announce(fragments[p.type] >= FRAGMENTS_NEEDED
+      ? `${cfg.weaponName} FORGED — the hero wields it!`
+      : `${cfg.weaponName} fragment ${fragments[p.type]}/${FRAGMENTS_NEEDED}`, cfg.hex);
+  }
 }
 
 function breakPortal(p) {
@@ -613,8 +657,8 @@ function breakPortal(p) {
   for (const m of p.mobs) {
     for (let i = 0; i < 2; i++) {
       enemies.push({
-        ai: 'raider', spr: 'wolf', size: m.size, r: m.r, hp: m.maxHp, maxHp: m.maxHp,
-        dmg: m.dmg, speed: m.isBoss ? 60 : 95,
+        ai: 'raider', spr: m.spr, size: m.size, r: m.r, hp: m.maxHp, maxHp: m.maxHp,
+        dmg: m.dmg, speed: m.isBoss ? 55 : Math.min(m.speed, 110),
         x: p.x + (Math.random() - 0.5) * 80, y: p.y + (Math.random() - 0.5) * 80,
         atkCd: 0, path: null, pathIdx: 0, repathT: 0,
       });
@@ -628,6 +672,20 @@ function arenaMove(a, dx, dy) {
   a.y = clamp(a.y + dy, ARENA_PAD, ARENA_H - ARENA_PAD);
 }
 
+// straight pursuit with a contact bite — goblins and spirits
+function chaseAttack(m, tgt, dt, moveFn) {
+  m.atkCd -= dt;
+  const d = Math.hypot(tgt.x - m.x, tgt.y - m.y);
+  if (d > m.r + tgt.r) {
+    moveFn(m, ((tgt.x - m.x) / d) * m.speed * dt, ((tgt.y - m.y) / d) * m.speed * dt);
+  }
+  if (m.atkCd <= 0 && d < m.r + tgt.r + 6) {
+    m.atkCd = 0.9;
+    return true;
+  }
+  return false;
+}
+
 function updateArena(dt) {
   const p = hero.arena;
   const allies = [hero, ...soldiers.filter((s) => s.arena === p)];
@@ -637,7 +695,10 @@ function updateArena(dt) {
       const d = Math.hypot(a.x - m.x, a.y - m.y);
       if (d < td) { tgt = a; td = d; }
     }
-    if (wolfLunge(m, tgt, dt, arenaMove)) {
+    const hit = m.atk === 'lunge'
+      ? wolfLunge(m, tgt, dt, arenaMove)
+      : chaseAttack(m, tgt, dt, arenaMove);
+    if (hit) {
       tgt.hp -= m.dmg;
       addEffect(tgt.x, tgt.y, 'hit', 0, p);
       if (tgt === hero && hero.hp <= 0) {
@@ -738,6 +799,24 @@ function nearestDanger(x, y, radius) {
   return best;
 }
 
+// ---------------------------------------------------------------- hero weapons
+function weaponUnlocked(w) {
+  for (const [t, cfg] of Object.entries(PORTAL_TYPES)) {
+    if (cfg.weapon === w && fragments[t] >= FRAGMENTS_NEEDED) return true;
+  }
+  return false;
+}
+function heroMelee() {
+  if (weaponUnlocked('blade')) return { name: 'spirit blade', dmg: 32, range: 70, knock: 12 };
+  if (weaponUnlocked('spear')) return { name: 'fang spear', dmg: 20, range: 70, knock: 6 };
+  return { name: 'fists', dmg: MELEE_DMG, range: MELEE_RANGE, knock: 4 };
+}
+function heroRanged() {
+  if (weaponUnlocked('crossbow')) return { name: 'crossbow', dmg: 20, cd: 0.5, speed: 520 };
+  if (hero.hasGun) return { name: 'pistol', dmg: HERO_BULLET_DMG, cd: HERO_FIRE_CD, speed: 440 };
+  return null;
+}
+
 function heroMove(dx, dy) {
   if (hero.arena) {
     hero.x = clamp(hero.x + dx, ARENA_PAD, ARENA_W - ARENA_PAD);
@@ -799,35 +878,37 @@ function updateHero(dt) {
   hero.aim = Math.atan2(aimY - hero.y, aimX - hero.x);
 
   hero.fireCd -= dt;
-  if (hero.hasGun && mouse.down && hero.fireCd <= 0) {
-    hero.fireCd = HERO_FIRE_CD;
+  const rw = heroRanged();
+  if (rw && mouse.down && hero.fireCd <= 0) {
+    hero.fireCd = rw.cd;
     bullets.push({ x: hero.x + Math.cos(hero.aim) * 14, y: hero.y + Math.sin(hero.aim) * 14,
-      vx: Math.cos(hero.aim) * 440, vy: Math.sin(hero.aim) * 440,
-      dmg: HERO_BULLET_DMG, life: 0.9, hero: true, space: hero.arena });
+      vx: Math.cos(hero.aim) * rw.speed, vy: Math.sin(hero.aim) * rw.speed,
+      dmg: rw.dmg, life: 0.9, hero: true, space: hero.arena });
   }
 
   hero.meleeCd -= dt;
   if (keys.Space && hero.meleeCd <= 0) {
     hero.meleeCd = MELEE_CD;
-    addEffect(hero.x, hero.y, 'stab', hero.aim, hero.arena);
+    const mw = heroMelee();
+    addEffect(hero.x, hero.y, 'stab', hero.aim, hero.arena, mw.range);
     // spear hitbox: distance from the target to the thrust segment, so enemies
     // right in front are hit before anything behind them slips into an angle check
     const dx = Math.cos(hero.aim), dy = Math.sin(hero.aim);
     const hitBySpear = (x, y, r) => {
-      const t = clamp((x - hero.x) * dx + (y - hero.y) * dy, 0, MELEE_RANGE);
+      const t = clamp((x - hero.x) * dx + (y - hero.y) * dy, 0, mw.range);
       return Math.hypot(x - (hero.x + dx * t), y - (hero.y + dy * t)) < r + SPEAR_HALF_W;
     };
     const targets = hero.arena ? hero.arena.mobs : enemies;
     for (const en of targets) {
       if (!hitBySpear(en.x, en.y, en.r)) continue;
-      damageEnemy(en, MELEE_DMG, hero.arena);
+      damageEnemy(en, mw.dmg, hero.arena);
       const angTo = Math.atan2(en.y - hero.y, en.x - hero.x);
-      en.x += Math.cos(angTo) * 4;
-      en.y += Math.sin(angTo) * 4;
+      en.x += Math.cos(angTo) * mw.knock;
+      en.y += Math.sin(angTo) * mw.knock;
     }
     if (!hero.arena) {
       for (const den of dens) {
-        if (hitBySpear(den.x, den.y, 16)) damageDen(den, MELEE_DMG);
+        if (hitBySpear(den.x, den.y, 16)) damageDen(den, mw.dmg);
       }
     }
   }
@@ -1066,7 +1147,7 @@ function updateSoldiers(dt) {
         if (td < KNIGHT_RANGE + tgt.r && s.atkCd <= 0) {
           s.atkCd = KNIGHT_CD;
           const aim = Math.atan2(tgt.y - s.y, tgt.x - s.x);
-          addEffect(s.x, s.y, 'stab', aim, s.arena);
+          addEffect(s.x, s.y, 'stab', aim, s.arena, KNIGHT_RANGE);
           // spear hitbox like the hero's, but with the heavy knockback
           const kdx = Math.cos(aim), kdy = Math.sin(aim);
           for (const en of foes) {
@@ -1325,8 +1406,8 @@ function damageDen(den, dmg) {
   addEffect(den.x, den.y, 'hit');
 }
 
-function addEffect(x, y, type, angle = 0, space = null) {
-  effects.push({ x, y, type, angle, space, life: type === 'stab' ? 0.15 : 0.2 });
+function addEffect(x, y, type, angle = 0, space = null, len = MELEE_RANGE) {
+  effects.push({ x, y, type, angle, space, len, life: type === 'stab' ? 0.15 : 0.2 });
 }
 function addFloater(x, y, text, color) {
   floaters.push({ x, y, text, color, life: 1.4 });
@@ -1484,7 +1565,7 @@ function drawViewport(cam, vx, vw, isBuilder) {
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.moveTo(fx.x + Math.cos(fx.angle) * 8, fx.y + Math.sin(fx.angle) * 8);
-      ctx.lineTo(fx.x + Math.cos(fx.angle) * MELEE_RANGE, fx.y + Math.sin(fx.angle) * MELEE_RANGE);
+      ctx.lineTo(fx.x + Math.cos(fx.angle) * fx.len, fx.y + Math.sin(fx.angle) * fx.len);
       ctx.stroke();
     }
   }
@@ -1530,7 +1611,7 @@ function drawBar(x, y, w, ratio, color) {
 
 function drawHero() {
   ctx.drawImage(SPR.hero, hero.x - 14, hero.y - 14, 28, 28);
-  if (hero.hasGun) {
+  if (heroRanged()) {
     ctx.save();
     ctx.translate(hero.x, hero.y);
     ctx.rotate(hero.aim);
@@ -1543,24 +1624,26 @@ function drawHero() {
 }
 
 function drawPortal(p) {
+  const cfg = PORTAL_TYPES[p.type];
   const spin = time * 2.5;
-  ctx.fillStyle = 'rgba(64,224,128,0.18)';
+  ctx.fillStyle = `rgba(${cfg.rgb},0.18)`;
   ctx.beginPath();
   ctx.arc(p.x, p.y, 16, 0, Math.PI * 2);
   ctx.fill();
   ctx.lineWidth = 3;
   for (let i = 0; i < 3; i++) {
-    ctx.strokeStyle = i === 0 ? '#40e080' : 'rgba(64,224,128,0.55)';
+    ctx.strokeStyle = i === 0 ? cfg.hex : `rgba(${cfg.rgb},0.55)`;
     ctx.beginPath();
     ctx.arc(p.x, p.y, 8 + i * 5, spin + i * 2.1, spin + i * 2.1 + Math.PI * 1.2);
     ctx.stroke();
   }
-  drawBar(p.x - 14, p.y - 28, 28, p.t / PORTAL_BREAK_TIME, '#40e080');
+  drawBar(p.x - 14, p.y - 28, 28, p.t / PORTAL_BREAK_TIME, cfg.hex);
 }
 
 // the pocket dimension behind a portal — drawn instead of the hero's world viewport
 function drawArena() {
   const p = hero.arena;
+  const cfg = PORTAL_TYPES[p.type];
   ctx.save();
   ctx.beginPath();
   ctx.rect(RIGHT_VX, HUD_H, RIGHT_VW, VIEW_H);
@@ -1573,7 +1656,7 @@ function drawArena() {
     for (let tx = 0; tx < ARENA_WT; tx++) {
       const px = tx * TILE, py = ty * TILE;
       const edge = tx === 0 || ty === 0 || tx === ARENA_WT - 1 || ty === ARENA_HT - 1;
-      ctx.fillStyle = (tx + ty) % 2 ? '#152318' : '#182a1b';
+      ctx.fillStyle = (tx + ty) % 2 ? cfg.floor[0] : cfg.floor[1];
       ctx.fillRect(px, py, TILE, TILE);
       if (edge) ctx.drawImage(SPR.rock, px, py, TILE, TILE);
     }
@@ -1582,12 +1665,12 @@ function drawArena() {
   for (const m of p.mobs) {
     const s = m.size;
     if (m.isBoss) {
-      ctx.fillStyle = 'rgba(64,224,128,0.16)';
+      ctx.fillStyle = `rgba(${cfg.rgb},0.16)`;
       ctx.beginPath();
       ctx.arc(m.x, m.y, s / 2 + 8, 0, Math.PI * 2);
       ctx.fill();
     }
-    ctx.drawImage(SPR.wolf, m.x - s / 2, m.y - s / 2, s, s);
+    ctx.drawImage(SPR[m.spr], m.x - s / 2, m.y - s / 2, s, s);
     if (m.windupT > 0) {
       ctx.strokeStyle = 'rgba(255,80,80,0.8)';
       ctx.lineWidth = 2;
@@ -1626,7 +1709,7 @@ function drawArena() {
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.moveTo(fx.x + Math.cos(fx.angle) * 8, fx.y + Math.sin(fx.angle) * 8);
-      ctx.lineTo(fx.x + Math.cos(fx.angle) * MELEE_RANGE, fx.y + Math.sin(fx.angle) * MELEE_RANGE);
+      ctx.lineTo(fx.x + Math.cos(fx.angle) * fx.len, fx.y + Math.sin(fx.angle) * fx.len);
       ctx.stroke();
     }
   }
@@ -1635,8 +1718,8 @@ function drawArena() {
   // arena overlay: title + boss bar
   ctx.textAlign = 'center';
   ctx.font = 'bold 16px monospace';
-  ctx.fillStyle = '#40e080';
-  ctx.fillText('GREEN PORTAL — slay the ALPHA WOLF!', RIGHT_VX + RIGHT_VW / 2, HUD_H + 26);
+  ctx.fillStyle = cfg.hex;
+  ctx.fillText(`${cfg.label} PORTAL — slay the ${cfg.boss}!`, RIGHT_VX + RIGHT_VW / 2, HUD_H + 26);
   const boss = p.mobs.find((m) => m.isBoss);
   if (boss) {
     const bw = 300, bx = RIGHT_VX + RIGHT_VW / 2 - bw / 2, by = HUD_H + 36;
@@ -1684,7 +1767,7 @@ function drawMinimap() {
   for (const l of lumberjacks) dot(l.x, l.y, '#c8905a', 2);
   for (const s of soldiers) if (!s.arena) dot(s.x, s.y, '#e8e0d0', 2);
   for (const en of enemies) if (en.ai === 'raider') dot(en.x, en.y, '#ff4040', 3);
-  for (const p of portals) if (time % 0.8 < 0.5) dot(p.x, p.y, '#40e080', 4);
+  for (const p of portals) if (time % 0.8 < 0.5) dot(p.x, p.y, PORTAL_TYPES[p.type].hex, 4);
   if (!hero.dead && !hero.arena) dot(hero.x, hero.y, '#ffffff', 3);
   // viewport boxes
   ctx.strokeStyle = 'rgba(255,255,255,0.35)';
@@ -1764,9 +1847,16 @@ function drawHUD() {
   ctx.fillText(`troops: ${stance} (G)`, LEFT_VX + 80, HUD_H + 16);
   ctx.fillStyle = '#6a6480';
   ctx.fillText('HERO', RIGHT_VX + 8, HUD_H + 16);
-  if (!hero.hasGun) {
-    ctx.fillStyle = '#e8c83a';
-    ctx.fillText(`bare-handed — buy pistol at hall: E (${PISTOL_COST}g)`, RIGHT_VX + 56, HUD_H + 16);
+  const mw = heroMelee(), rw = heroRanged();
+  ctx.fillStyle = '#a8a0b8';
+  ctx.fillText(`${mw.name} / ${rw ? rw.name : `no gun — E at hall (${PISTOL_COST}g)`}`, RIGHT_VX + 56, HUD_H + 16);
+  let fxx = RIGHT_VX + 440;
+  for (const [t, cfg] of Object.entries(PORTAL_TYPES)) {
+    ctx.fillStyle = cfg.hex;
+    ctx.fillText(fragments[t] >= FRAGMENTS_NEEDED
+      ? `${cfg.label[0]}:ok`
+      : `${cfg.label[0]}:${fragments[t]}/${FRAGMENTS_NEEDED}`, fxx, HUD_H + 16);
+    fxx += 56;
   }
 
   // announcements
@@ -1800,8 +1890,9 @@ function drawTitle() {
     'the world is dark. the HERO (right screen) explores it and finds gold deposits.',
     'the BUILDER (left screen) hires miners — escort them and they will mine gold.',
     'gold ONLY comes from the mines. wood, stone and meat trickle in over time.',
-    'GREEN PORTALS open in the wild — walk in (E) and slay the ALPHA WOLF inside,',
-    'or the timer runs out, the portal breaks, and its monsters charge the hall!',
+    'PORTALS open in the wild — GREEN wolves, RED goblins, BLUE spirits. walk in (E),',
+    'slay the boss for loot, or the portal breaks and its monsters charge the hall!',
+    `clear the same color ${FRAGMENTS_NEEDED}x to forge its weapon: spear, crossbow, spirit blade`,
     '',
     'BUILDER — arrows: cursor (shift = fast)   Y wall / I house / O repair   enter: build',
     `hire — P miner  L lumberjack  J archer  K knight   G: garrison / follow the hero`,
