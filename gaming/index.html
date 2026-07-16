@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Hall Defenders — kingdom co-op</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #14101c;
+    color: #e8e0d0;
+    font-family: monospace;
+    height: 100%;
+    overflow: hidden;
+  }
+  #wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+  }
+  canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background: #0a0812;
+    box-shadow: 0 0 40px #000;
+    max-width: 100vw;
+    max-height: 100vh;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="1280" height="720"></canvas>
+</div>
+<script src="sprites.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
