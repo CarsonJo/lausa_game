@@ -49,6 +49,7 @@ const HERO_BULLET_DMG = 7;
 const MELEE_DMG = 12;
 const MELEE_CD = 0.45;
 const MELEE_RANGE = 46;
+const MELEE_ARC = Math.PI / 36;            // ±5° — a 10° precision jab
 const RESPAWN_TIME = 5;
 const WOOD_PER_SEC = 0.6;
 const STONE_PER_SEC = 0.35;
@@ -729,7 +730,7 @@ function updateHero(dt) {
       const angTo = Math.atan2(y - hero.y, x - hero.x);
       let diff = Math.abs(angTo - hero.aim);
       if (diff > Math.PI) diff = 2 * Math.PI - diff;
-      return diff < Math.PI / 4;
+      return diff < MELEE_ARC;
     };
     const targets = hero.arena ? hero.arena.mobs : enemies;
     for (const en of targets) {
@@ -1235,7 +1236,7 @@ function drawViewport(cam, vx, vw, isBuilder) {
       ctx.strokeStyle = `rgba(255,255,220,${fx.life * 6})`;
       ctx.lineWidth = 4;
       ctx.beginPath();
-      ctx.arc(fx.x, fx.y, MELEE_RANGE - 6, fx.angle - Math.PI / 4, fx.angle + Math.PI / 4);
+      ctx.arc(fx.x, fx.y, MELEE_RANGE - 6, fx.angle - MELEE_ARC, fx.angle + MELEE_ARC);
       ctx.stroke();
     }
   }
@@ -1376,7 +1377,7 @@ function drawArena() {
       ctx.strokeStyle = `rgba(255,255,220,${fx.life * 6})`;
       ctx.lineWidth = 4;
       ctx.beginPath();
-      ctx.arc(fx.x, fx.y, MELEE_RANGE - 6, fx.angle - Math.PI / 4, fx.angle + Math.PI / 4);
+      ctx.arc(fx.x, fx.y, MELEE_RANGE - 6, fx.angle - MELEE_ARC, fx.angle + MELEE_ARC);
       ctx.stroke();
     }
   }
