@@ -64,6 +64,13 @@ const TURRET_CD = 0.7;
 const TURRET_DMG = 8;
 const HOUSE_TAX_EVERY = 6;
 const DANGER_RADIUS = 170;                 // monsters this close scare miners
+const HERO_SIGHT = 5;                      // fog reveal radius around the hero
+const WOLF_STALK_MULT = 0.65;              // stalk speed = base speed * mult
+const WOLF_LUNGE_SPEED_MULT = 3.2;         // lunge speed = base speed * mult
+const WOLF_LUNGE_TIME = 0.35;
+const WOLF_WINDUP = 0.3;                   // telegraph before the lunge
+const WOLF_LUNGE_RANGE = 130;
+const WOLF_LUNGE_CD = 1.4;
 
 // ---------------------------------------------------------------- state
 let state = 'title';
@@ -174,7 +181,7 @@ function spawnWolf(den) {
     ai: 'wolf', spr: 'wolf', den,
     x: den.x + (Math.random() - 0.5) * 80, y: den.y + (Math.random() - 0.5) * 80,
     home: { x: den.x, y: den.y },
-    r: 9, hp: 24, maxHp: 24, dmg: 8, atkCd: 0,
+    r: 9, hp: 24, maxHp: 24, dmg: 8, speed: 95, atkCd: 0,
     wt: 0, wx: den.x, wy: den.y,
   });
 }
@@ -531,25 +538,37 @@ function clearPortal(p) {
 
 function breakPortal(p) {
   portals.splice(portals.indexOf(p), 1);
+  // a broken portal unleashes TWICE the monsters still inside, at full health
   for (const m of p.mobs) {
-    enemies.push({
-      ai: 'raider', spr: 'wolf', size: m.size, r: m.r, hp: m.hp, maxHp: m.maxHp,
-      dmg: m.dmg, speed: m.isBoss ? 60 : 95,
-      x: p.x + (Math.random() - 0.5) * 60, y: p.y + (Math.random() - 0.5) * 60,
-      atkCd: 0, path: null, pathIdx: 0, repathT: 0,
-    });
+    for (let i = 0; i < 2; i++) {
+      enemies.push({
+        ai: 'raider', spr: 'wolf', size: m.size, r: m.r, hp: m.maxHp, maxHp: m.maxHp,
+        dmg: m.dmg, speed: m.isBoss ? 60 : 95,
+        x: p.x + (Math.random() - 0.5) * 80, y: p.y + (Math.random() - 0.5) * 80,
+        atkCd: 0, path: null, pathIdx: 0, repathT: 0,
+      });
+    }
   }
-  announce('a portal BROKE — its monsters are loose!', '#ff6060');
+  announce('a portal BROKE — twice its monsters are loose!', '#ff6060');
+}
+
+function arenaMove(a, dx, dy) {
+  a.x = clamp(a.x + dx, ARENA_PAD, ARENA_W - ARENA_PAD);
+  a.y = clamp(a.y + dy, ARENA_PAD, ARENA_H - ARENA_PAD);
 }
 
 function updateArena(dt) {
   const p = hero.arena;
   for (const m of p.mobs) {
-    m.atkCd -= dt;
-    const d = Math.hypot(hero.x - m.x, hero.y - m.y);
-    if (d > 1) {
-      m.x += ((hero.x - m.x) / d) * m.speed * dt;
-      m.y += ((hero.y - m.y) / d) * m.speed * dt;
+    if (wolfLunge(m, hero, dt, arenaMove)) {
+      hero.hp -= m.dmg;
+      addEffect(hero.x, hero.y, 'hit', 0, p);
+      if (hero.hp <= 0) {
+        hero.dead = true; hero.respawn = RESPAWN_TIME;
+        hero.arena = null;
+        announce('the hero fell inside the portal!', '#ff6060');
+        return;
+      }
     }
     for (const o of p.mobs) {
       if (o === m) continue;
@@ -561,17 +580,6 @@ function updateArena(dt) {
     }
     m.x = clamp(m.x, ARENA_PAD, ARENA_W - ARENA_PAD);
     m.y = clamp(m.y, ARENA_PAD, ARENA_H - ARENA_PAD);
-    if (m.atkCd <= 0 && d < m.r + hero.r + 5) {
-      m.atkCd = 0.9;
-      hero.hp -= m.dmg;
-      addEffect(hero.x, hero.y, 'hit', 0, p);
-      if (hero.hp <= 0) {
-        hero.dead = true; hero.respawn = RESPAWN_TIME;
-        hero.arena = null;
-        announce('the hero fell inside the portal!', '#ff6060');
-        return;
-      }
-    }
   }
   p.mobs = p.mobs.filter((m) => m.hp > 0);
   if (p.mobs.length === 0) clearPortal(p);
@@ -694,7 +702,7 @@ function updateHero(dt) {
     const tx = Math.floor(hero.x / TILE), ty = Math.floor(hero.y / TILE);
     if (tx !== heroTileX || ty !== heroTileY) {
       heroTileX = tx; heroTileY = ty;
-      revealCircle(tx, ty, 8);
+      revealCircle(tx, ty, HERO_SIGHT);
     }
   }
 
@@ -721,15 +729,15 @@ function updateHero(dt) {
       const angTo = Math.atan2(y - hero.y, x - hero.x);
       let diff = Math.abs(angTo - hero.aim);
       if (diff > Math.PI) diff = 2 * Math.PI - diff;
-      return diff < Math.PI / 2;
+      return diff < Math.PI / 4;
     };
     const targets = hero.arena ? hero.arena.mobs : enemies;
     for (const en of targets) {
       if (!inArc(en.x, en.y, en.r)) continue;
       damageEnemy(en, MELEE_DMG, hero.arena);
       const angTo = Math.atan2(en.y - hero.y, en.x - hero.x);
-      en.x += Math.cos(angTo) * 10;
-      en.y += Math.sin(angTo) * 10;
+      en.x += Math.cos(angTo) * 4;
+      en.y += Math.sin(angTo) * 4;
     }
     if (!hero.arena) {
       for (const den of dens) {
@@ -863,6 +871,37 @@ function startReturn(m) {
   setPathTo(m, hall.tx, hall.ty, false);
 }
 
+// wolves stalk, telegraph (windup), then attack with a big lunge that stops on contact.
+// moveFn(actor, dx, dy) supplies the collision model (world vs arena). Returns true on a hit.
+function wolfLunge(w, target, dt, moveFn) {
+  w.lungeCd = (w.lungeCd || 0) - dt;
+  const d = Math.hypot(target.x - w.x, target.y - w.y);
+  if (w.lungeT > 0) {
+    w.lungeT -= dt;
+    const sp = w.speed * WOLF_LUNGE_SPEED_MULT;
+    moveFn(w, w.lungeDx * sp * dt, w.lungeDy * sp * dt);
+    if (Math.hypot(target.x - w.x, target.y - w.y) < w.r + target.r + 6) {
+      w.lungeT = 0;
+      w.lungeCd = WOLF_LUNGE_CD;
+      return true;
+    }
+    if (w.lungeT <= 0) w.lungeCd = WOLF_LUNGE_CD;
+  } else if (w.windupT > 0) {
+    w.windupT -= dt;
+    if (w.windupT <= 0) {
+      const ang = Math.atan2(target.y - w.y, target.x - w.x);
+      w.lungeDx = Math.cos(ang);
+      w.lungeDy = Math.sin(ang);
+      w.lungeT = WOLF_LUNGE_TIME;
+    }
+  } else {
+    const sp = w.speed * WOLF_STALK_MULT;
+    if (d > 26) moveFn(w, ((target.x - w.x) / d) * sp * dt, ((target.y - w.y) / d) * sp * dt);
+    if (d < WOLF_LUNGE_RANGE && w.lungeCd <= 0) w.windupT = WOLF_WINDUP;
+  }
+  return false;
+}
+
 function updateEnemies(dt) {
   for (const en of enemies) {
     en.atkCd -= dt;
@@ -876,10 +915,7 @@ function updateEnemies(dt) {
         if (d < vd && Math.hypot(c.x - en.home.x, c.y - en.home.y) < 360) { victim = c; vd = d; }
       }
       if (victim) {
-        const ang = Math.atan2(victim.y - en.y, victim.x - en.x);
-        moveActor(en, Math.cos(ang) * 95 * dt, Math.sin(ang) * 95 * dt);
-        if (en.atkCd <= 0 && vd < en.r + victim.r + 5) {
-          en.atkCd = 0.9;
+        if (wolfLunge(en, victim, dt, moveActor)) {
           victim.hp -= en.dmg;
           addEffect(victim.x, victim.y, 'hit');
           if (victim === hero && hero.hp <= 0) { hero.dead = true; hero.respawn = RESPAWN_TIME; }
@@ -1164,6 +1200,13 @@ function drawViewport(cam, vx, vw, isBuilder) {
     const spr = SPR[en.spr];
     const s = en.size || (en.spr === 'brute' ? 36 : 26);
     ctx.drawImage(spr, en.x - s / 2, en.y - s / 2, s, s);
+    if (en.windupT > 0) {
+      ctx.strokeStyle = 'rgba(255,80,80,0.8)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(en.x, en.y, s / 2 + 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     if (en.hp < en.maxHp) drawBar(en.x - 12, en.y - s / 2 - 6, 24, en.hp / en.maxHp, '#e05050');
   }
 
@@ -1192,7 +1235,7 @@ function drawViewport(cam, vx, vw, isBuilder) {
       ctx.strokeStyle = `rgba(255,255,220,${fx.life * 6})`;
       ctx.lineWidth = 4;
       ctx.beginPath();
-      ctx.arc(fx.x, fx.y, MELEE_RANGE - 6, fx.angle - Math.PI / 3, fx.angle + Math.PI / 3);
+      ctx.arc(fx.x, fx.y, MELEE_RANGE - 6, fx.angle - Math.PI / 4, fx.angle + Math.PI / 4);
       ctx.stroke();
     }
   }
@@ -1302,6 +1345,13 @@ function drawArena() {
       ctx.fill();
     }
     ctx.drawImage(SPR.wolf, m.x - s / 2, m.y - s / 2, s, s);
+    if (m.windupT > 0) {
+      ctx.strokeStyle = 'rgba(255,80,80,0.8)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, s / 2 + 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     if (!m.isBoss && m.hp < m.maxHp) drawBar(m.x - 12, m.y - s / 2 - 6, 24, m.hp / m.maxHp, '#e05050');
   }
 
@@ -1326,7 +1376,7 @@ function drawArena() {
       ctx.strokeStyle = `rgba(255,255,220,${fx.life * 6})`;
       ctx.lineWidth = 4;
       ctx.beginPath();
-      ctx.arc(fx.x, fx.y, MELEE_RANGE - 6, fx.angle - Math.PI / 3, fx.angle + Math.PI / 3);
+      ctx.arc(fx.x, fx.y, MELEE_RANGE - 6, fx.angle - Math.PI / 4, fx.angle + Math.PI / 4);
       ctx.stroke();
     }
   }
